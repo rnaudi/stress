@@ -1,0 +1,43 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Verify
+        run: |
+          deno fmt --check
+          deno lint
+          deno check stress.ts stress_test.ts
+          deno test --allow-read
+
+      - name: Compile binary
+        run: |
+          deno compile \
+            --allow-run \
+            --allow-env \
+            --allow-read \
+            --allow-write \
+            --target aarch64-apple-darwin \
+            --output stress-darwin-arm64 \
+            stress.ts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: stress-darwin-arm64

@@ -1,0 +1,20 @@
+# values.yaml — Helm values for the load test chart.
+# Copy this file to values.yaml and fill in your values.
+
+gatling:
+  cluster_name: "my-cluster"
+  image:
+    name: "my-load-test"
+    repository: "my-registry.example.com/my-repo"
+  parallelism: 1
+  simulationClass: "com.example.loadtest.MySimulation"
+  env:
+    - name: BASE_URL
+      value: "https://my-service.example.com"
+resources:
+  requests:
+    cpu: "6"
+    memory: "8Gi"
+  limits:
+    cpu: "10"
+    memory: "12Gi"
