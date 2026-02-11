@@ -251,6 +251,14 @@ function simulationShort(cfg: Config): string {
   return cfg.simulation.split(".").pop() ?? cfg.simulation;
 }
 
+/** Package path of the simulation class (everything before the last dot). */
+function simulationPackage(cfg: Config): string {
+  const parts = cfg.simulation.split(".");
+  if (parts.length <= 1) return "";
+  parts.pop();
+  return parts.join(".");
+}
+
 const REQUIRED_AWS_VARS = [
   "AWS_ACCESS_KEY_ID",
   "AWS_SECRET_ACCESS_KEY",
@@ -610,6 +618,14 @@ export async function pollUntil(
 
 /** Prints the run configuration and pipeline steps before execution. */
 function printConfig(cli: CLIRun, cfg: Config): void {
+  // Extract known helm values for first-class display.
+  const helm = cfg.helm as Record<string, unknown> | null;
+  const resources = extractResources(helm);
+  const parallelism = extractParallelism(helm);
+  const otherHelmLines = extractOtherHelmValues(helm);
+
+  const simPkg = simulationPackage(cfg);
+
   const lines = [
     "",
     `  Gatling Load Test Runner${cli.dryRun ? "  [DRY RUN]" : ""}`,
@@ -618,26 +634,86 @@ function printConfig(cli: CLIRun, cfg: Config): void {
     `  Profile:      ${cfg.profile}`,
     `  Cluster:      ${cfg.cluster} (${cfg.region})`,
     `  Namespace:    ${cfg.namespace}`,
+    "  ─────────────────────────────────────────────────────────",
+    `  Image:        ${cfg.repository}/${cfg.image}:${cli.imageTag}`,
+    `  Simulation:   ${simulationShort(cfg)}`,
+    ...(simPkg ? [`                ${simPkg}`] : []),
+    "  ─────────────────────────────────────────────────────────",
     `  Release:      ${cfg.release}`,
     `  Chart:        ${cfg.chart}`,
-    `  Image tag:    ${cli.imageTag}`,
-    `  Image:        ${cfg.repository}/${cfg.image}`,
-    `  Simulation:   ${simulationShort(cfg)}`,
+    `  Parallelism:  ${parallelism}`,
+    `  Resources:    ${resources}`,
+    ...otherHelmLines,
     "  ─────────────────────────────────────────────────────────",
     "  Pipeline:",
-    `    1.  aws-vault exec ${cfg.profile} -- env`,
-    `    2.  aws eks update-kubeconfig --name ${cfg.cluster} --region ${cfg.region}`,
-    `    3.  helm -n ${cfg.namespace} uninstall ${cfg.release}  (if exists)`,
-    `    4.  helm -n ${cfg.namespace} install ${cfg.release} ${cfg.chart}`,
-    `    5a. kubectl get pod -n ${cfg.namespace} -w  (background watch)`,
-    `    5b. Stream runner logs  (-l ${runnerLabel(cfg)})`,
-    `    5c. Stream reporter logs  (-l ${reporterLabel(cfg)})`,
+    `    1. aws-vault exec ${cfg.profile} -- env`,
+    `    2. aws eks update-kubeconfig --name ${cfg.cluster} --region ${cfg.region}`,
+    `    3. helm -n ${cfg.namespace} uninstall ${cfg.release}  (if exists)`,
+    `    4. helm -n ${cfg.namespace} install ${cfg.release} ${cfg.chart}`,
+    `    5. Watch pods + stream logs  (parallel)`,
     "  ─────────────────────────────────────────────────────────",
     "",
   ];
   for (const line of lines) {
     $.log(line);
   }
+}
+
+/** Extracts resources from helm values as a compact display string. */
+function extractResources(
+  helm: Record<string, unknown> | null,
+): string {
+  if (!helm) return "(default)";
+  const res = helm.resources as Record<string, Record<string, string>> | undefined;
+  if (!res) return "(default)";
+  const req = res.requests;
+  const lim = res.limits;
+  if (!req && !lim) return "(default)";
+  const cpu = `cpu ${req?.cpu ?? "?"}/${lim?.cpu ?? "?"}`;
+  const mem = `memory ${req?.memory ?? "?"}/${lim?.memory ?? "?"}`;
+  return `${cpu}  ${mem}  (req/limit)`;
+}
+
+/** Extracts parallelism from helm values. */
+function extractParallelism(
+  helm: Record<string, unknown> | null,
+): string {
+  if (!helm) return "(default)";
+  const gatling = helm.gatling as Record<string, unknown> | undefined;
+  if (!gatling || gatling.parallelism === undefined) return "(default)";
+  return String(gatling.parallelism);
+}
+
+/**
+ * Returns any helm values that weren't already surfaced as first-class fields.
+ * Strips `resources` and `gatling.parallelism` from the helm block, then
+ * renders the remainder as indented YAML lines. Returns an empty array if
+ * nothing remains.
+ */
+function extractOtherHelmValues(
+  helm: Record<string, unknown> | null,
+): string[] {
+  if (!helm) return [];
+
+  // Deep clone so we don't mutate the original config.
+  const rest = structuredClone(helm);
+
+  // Remove fields already displayed.
+  delete rest.resources;
+  if (rest.gatling && typeof rest.gatling === "object") {
+    const g = rest.gatling as Record<string, unknown>;
+    delete g.parallelism;
+    if (Object.keys(g).length === 0) delete rest.gatling;
+  }
+
+  if (Object.keys(rest).length === 0) return [];
+
+  const yaml = stringifyYaml(rest).trimEnd();
+  const lines: string[] = ["  Helm values:"];
+  for (const line of yaml.split("\n")) {
+    lines.push(`    ${line}`);
+  }
+  return lines;
 }
 
 /** Logs a shell command that is about to run. */

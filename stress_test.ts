@@ -5,7 +5,7 @@
  * section separators (CLIParse, parseAwsEnv, detectAwsEnv, etc.).
  * Each section covers happy paths, edge cases, and error conditions.
  */
-import { assertEquals, assertThrows } from "@std/assert";
+import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
   checkHelmCollisions,
   CLIParse,
@@ -208,6 +208,11 @@ Deno.test("parseAwsEnv — no AWS vars returns empty object", () => {
   assertEquals(parseAwsEnv(raw), {});
 });
 
+Deno.test("parseAwsEnv — lines without '=' are skipped", () => {
+  const raw = "AWS_BROKEN\nAWS_REGION=us-east-1\n=no-key";
+  assertEquals(parseAwsEnv(raw), { AWS_REGION: "us-east-1" });
+});
+
 // ---------------------------------------------------------------------------
 // detectAwsEnv
 // ---------------------------------------------------------------------------
@@ -292,6 +297,10 @@ Deno.test("redact — non-sensitive var shows full value", () => {
   assertEquals(redact("AWS_REGION", "us-east-1"), "us-east-1");
 });
 
+Deno.test("redact — exactly 4-char sensitive value shows only ****", () => {
+  assertEquals(redact("AWS_ACCESS_KEY_ID", "AKIA"), "****");
+});
+
 // ---------------------------------------------------------------------------
 // parsePodStatus
 // ---------------------------------------------------------------------------
@@ -322,6 +331,10 @@ Deno.test("parsePodStatus — handles variable whitespace alignment", () => {
     parsePodStatus("pod-abc   0/1     ContainerCreating     0          3s"),
     { name: "pod-abc", status: "ContainerCreating" },
   );
+});
+
+Deno.test("parsePodStatus — returns null for line with fewer than 3 columns", () => {
+  assertEquals(parsePodStatus("pod-name  1/1"), null);
 });
 
 // ---------------------------------------------------------------------------
@@ -500,6 +513,20 @@ Deno.test("pollUntil — returns false when maxMs exceeded", async () => {
   assertEquals(elapsed < 300, true, `expected <300ms, got ${elapsed}ms`);
 });
 
+Deno.test("pollUntil — propagates error when fn throws", async () => {
+  const ac = new AbortController();
+  await assertRejects(
+    () =>
+      pollUntil(
+        () => Promise.reject(new Error("boom")),
+        20,
+        ac.signal,
+      ),
+    Error,
+    "boom",
+  );
+});
+
 // ---------------------------------------------------------------------------
 // parseConfig
 // ---------------------------------------------------------------------------
@@ -534,10 +561,21 @@ Deno.test("parseConfig — missing required field throws listing the field", () 
 
 Deno.test("parseConfig — multiple missing fields lists all", () => {
   const { profile: _p, cluster: _c, namespace: _n, ...rest } = VALID_CONFIG;
-  const err = getError(() => parseConfig(rest));
-  assertEquals(err.message.includes("profile"), true);
-  assertEquals(err.message.includes("cluster"), true);
-  assertEquals(err.message.includes("namespace"), true);
+  assertThrows(
+    () => parseConfig(rest),
+    Error,
+    "profile",
+  );
+  assertThrows(
+    () => parseConfig(rest),
+    Error,
+    "cluster",
+  );
+  assertThrows(
+    () => parseConfig(rest),
+    Error,
+    "namespace",
+  );
 });
 
 Deno.test("parseConfig — empty string value treated as missing", () => {
@@ -653,20 +691,10 @@ Deno.test("checkHelmCollisions — detects multiple collisions", () => {
       image: { name: "wrong", repository: "wrong" },
     },
   };
-  const collisions = checkHelmCollisions(helm);
-  assertEquals(collisions.includes("gatling.cluster_name"), true);
-  assertEquals(collisions.includes("gatling.simulationClass"), true);
-  assertEquals(collisions.includes("gatling.image.name"), true);
-  assertEquals(collisions.includes("gatling.image.repository"), true);
-  assertEquals(collisions.length, 4);
+  assertEquals(checkHelmCollisions(helm).sort(), [
+    "gatling.cluster_name",
+    "gatling.image.name",
+    "gatling.image.repository",
+    "gatling.simulationClass",
+  ]);
 });
-
-/** Helper to capture an Error from a throwing function. */
-function getError(fn: () => unknown): Error {
-  try {
-    fn();
-    throw new Error("Expected function to throw");
-  } catch (e) {
-    return e as Error;
-  }
-}
