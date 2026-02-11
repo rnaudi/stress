@@ -4,8 +4,6 @@ Gatling load tests on EKS, one command.
 
 ## Prerequisites
 
-[aws-vault](https://github.com/99designs/aws-vault), [kubectl](https://kubernetes.io/docs/tasks/tools/), [helm](https://helm.sh/docs/intro/install/)
-
 ```bash
 brew install aws-vault kubectl helm
 ```
@@ -62,6 +60,7 @@ repository: my-registry.example.com/my-repo
 
 # Helm values — passed directly to helm install -f <tempfile>.
 # Auto-injected fields (see below) don't need to be here.
+# Optional.
 helm:
   gatling:
     parallelism: 1
@@ -76,22 +75,3 @@ helm:
       cpu: "10"
       memory: "12Gi"
 ```
-
-Auto-injected via `--set` (don't duplicate in `helm:`):
-
-- `gatling.cluster_name` ← `cluster`
-- `gatling.image.name` ← `image`
-- `gatling.image.repository` ← `repository`
-- `gatling.image.tag` ← `--image-tag`
-- `gatling.simulationClass` ← `simulation`
-
-## Development
-
-```bash
-deno task test        # 49 tests, pure functions only — no AWS/EKS needed
-deno fmt              # format
-deno lint             # lint
-deno check stress.ts  # type-check
-```
-
-See [docs/spec.md](docs/spec.md) for internals.
