@@ -46,12 +46,11 @@ deno compile --allow-run --allow-env --allow-read --allow-write --output stress 
 ## Quick Start
 
 ```bash
-# 1. Generate config files
+# 1. Generate config
 stress --init
 
 # 2. Edit with your project values
 vim stress.yaml
-vim values.yaml
 
 # 3. Verify everything is set up
 stress --doctor
@@ -60,7 +59,7 @@ stress --doctor
 stress --mode=run --image-tag=h69
 ```
 
-That's it. Four commands from install to running load test.
+That's it. Three commands from install to running load test.
 
 ## Common Use Cases
 
@@ -98,7 +97,7 @@ Ctrl+C during a run cleans up the helm release automatically. No orphaned pods.
 
 ## Configuration
 
-`stress --init` generates two files:
+`stress --init` generates one file:
 
 ### `stress.yaml` — where and what to run
 
@@ -112,36 +111,39 @@ namespace: my-namespace
 # What to run
 release: my-load-test
 chart: my-repo/my-chart
-values: values.yaml
 simulation: com.example.loadtest.MySimulation
+image: my-load-test
+repository: my-registry.example.com/my-repo
+
+# Helm values — passed directly to helm install -f <tempfile>.
+# Fields derived from above (cluster_name, image.*, simulationClass)
+# are injected automatically via --set. Don't duplicate them here.
+helm:
+  gatling:
+    parallelism: 1
+    env:
+      - name: BASE_URL
+        value: "https://my-service.example.com"
+  resources:
+    requests:
+      cpu: "6"
+      memory: "8Gi"
+    limits:
+      cpu: "10"
+      memory: "12Gi"
 ```
 
-All 8 fields are required. `stress --doctor` validates them.
+The top-level fields are required. The `helm:` block is optional — if your chart
+can be fully configured via `--set` flags, you can omit it.
 
-### `values.yaml` — helm values for your chart
+The following helm values are injected automatically from the top-level fields
+via `--set` (don't duplicate them in `helm:`):
 
-```yaml
-gatling:
-  cluster_name: "my-cluster"
-  image:
-    name: "my-load-test"
-    repository: "my-registry.example.com/my-repo"
-  parallelism: 1
-  simulationClass: "com.example.loadtest.MySimulation"
-  env:
-    - name: BASE_URL
-      value: "https://my-service.example.com"
-resources:
-  requests:
-    cpu: "6"
-    memory: "8Gi"
-  limits:
-    cpu: "10"
-    memory: "12Gi"
-```
-
-Passed to `helm install -f values.yaml`. See `values.example.yaml` for a
-reference template.
+- `gatling.cluster_name` from `cluster`
+- `gatling.image.name` from `image`
+- `gatling.image.repository` from `repository`
+- `gatling.image.tag` from `--image-tag`
+- `gatling.simulationClass` from `simulation`
 
 ## Verify Setup
 
@@ -154,12 +156,12 @@ stress --doctor
 [PASS] kubectl: v1.28.2
 [PASS] helm: v3.14.0
 [PASS] stress.yaml: valid (cluster=analytics, namespace=load-test)
-[PASS] values: values.yaml exists
+[PASS] helm values: 2 top-level keys
 [INFO] AWS credentials: not in env (will prompt via aws-vault)
 ```
 
-Checks tools, config, values file, and AWS credential status. Exit 1 if anything
-required is missing.
+Checks tools, config, helm values block, and AWS credential status. Exit 1 if
+anything required is missing.
 
 ## Development
 

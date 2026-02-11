@@ -1,5 +1,6 @@
 import { assertEquals, assertThrows } from "@std/assert";
 import {
+  checkHelmCollisions,
   CLIParse,
   detectAwsEnv,
   interruptibleSleep,
@@ -109,6 +110,30 @@ Deno.test("CLIParse — unknown mode throws", () => {
     Error,
     "Unknown mode: deploy",
   );
+});
+
+Deno.test("CLIParse — --version returns version", () => {
+  assertEquals(CLIParse(["--version"]), { tag: "version" });
+});
+
+Deno.test("CLIParse — --version takes priority over --help", () => {
+  assertEquals(CLIParse(["--version", "--help"]), { tag: "version" });
+});
+
+Deno.test("CLIParse — mode=clean", () => {
+  assertEquals(CLIParse(["--mode=clean"]), {
+    tag: "clean",
+    config: "stress.yaml",
+    dryRun: false,
+  });
+});
+
+Deno.test("CLIParse — mode=clean with dry-run", () => {
+  assertEquals(CLIParse(["--mode=clean", "--dry-run"]), {
+    tag: "clean",
+    config: "stress.yaml",
+    dryRun: true,
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -431,6 +456,27 @@ Deno.test("pollUntil — waits interval between polls", async () => {
   assertEquals(elapsed >= 40, true, `expected ~50ms wait, got ${elapsed}ms`);
 });
 
+Deno.test("pollUntil — returns false when maxMs exceeded", async () => {
+  let calls = 0;
+  const ac = new AbortController();
+  const start = Date.now();
+
+  const result = await pollUntil(
+    () => {
+      calls++;
+      return Promise.resolve(false); // never succeeds
+    },
+    30,
+    ac.signal,
+    80,
+  );
+  const elapsed = Date.now() - start;
+
+  assertEquals(result, false);
+  assertEquals(calls >= 1, true, `expected at least 1 call, got ${calls}`);
+  assertEquals(elapsed < 300, true, `expected <300ms, got ${elapsed}ms`);
+});
+
 // ---------------------------------------------------------------------------
 // parseConfig
 // ---------------------------------------------------------------------------
@@ -442,8 +488,9 @@ const VALID_CONFIG = {
   namespace: "load-test",
   release: "heimdall-load-test",
   chart: "playgami-load-testing/load-test",
-  values: "deployment/preview.yaml",
   simulation: "com.scopely.heimdall.loadtest.smoke.SmokeSimulation",
+  image: "heimdall-load-test",
+  repository: "scopelybin-docker.jfrog.io/satellites-snapshots",
 };
 
 Deno.test("parseConfig — valid config with all required fields", () => {
@@ -483,6 +530,112 @@ Deno.test("parseConfig — non-object input throws", () => {
   assertThrows(() => parseConfig("string"), Error, "YAML mapping");
   assertThrows(() => parseConfig(42), Error, "YAML mapping");
   assertThrows(() => parseConfig([]), Error, "YAML mapping");
+});
+
+Deno.test("parseConfig — helm block is optional, defaults to null", () => {
+  const cfg = parseConfig(VALID_CONFIG);
+  assertEquals(cfg.helm, null);
+});
+
+Deno.test("parseConfig — helm block is passed through when present", () => {
+  const helm = {
+    gatling: { parallelism: 2 },
+    resources: { requests: { cpu: "4" } },
+  };
+  const cfg = parseConfig({ ...VALID_CONFIG, helm });
+  assertEquals(cfg.helm, helm);
+});
+
+Deno.test("parseConfig — helm block must be object if present", () => {
+  assertThrows(
+    () => parseConfig({ ...VALID_CONFIG, helm: "not-an-object" }),
+    Error,
+    "helm",
+  );
+  assertThrows(
+    () => parseConfig({ ...VALID_CONFIG, helm: ["array"] }),
+    Error,
+    "helm",
+  );
+});
+
+Deno.test("parseConfig — pod_timeout defaults to 600 when absent", () => {
+  const cfg = parseConfig(VALID_CONFIG);
+  assertEquals(cfg.pod_timeout, 600);
+});
+
+Deno.test("parseConfig — pod_timeout accepts positive number", () => {
+  const cfg = parseConfig({ ...VALID_CONFIG, pod_timeout: 300 });
+  assertEquals(cfg.pod_timeout, 300);
+});
+
+Deno.test("parseConfig — pod_timeout must be positive number", () => {
+  assertThrows(
+    () => parseConfig({ ...VALID_CONFIG, pod_timeout: "abc" }),
+    Error,
+    "pod_timeout",
+  );
+  assertThrows(
+    () => parseConfig({ ...VALID_CONFIG, pod_timeout: -1 }),
+    Error,
+    "pod_timeout",
+  );
+  assertThrows(
+    () => parseConfig({ ...VALID_CONFIG, pod_timeout: 0 }),
+    Error,
+    "pod_timeout",
+  );
+});
+
+Deno.test("parseConfig — wrong-type field reported as invalid not missing", () => {
+  assertThrows(
+    () => parseConfig({ ...VALID_CONFIG, region: 1 }),
+    Error,
+    "invalid fields: region (must be a string, got number)",
+  );
+});
+
+Deno.test("parseConfig — multiple wrong-type fields lists all as invalid", () => {
+  assertThrows(
+    () => parseConfig({ ...VALID_CONFIG, cluster: true, namespace: [1, 2] }),
+    Error,
+    "invalid fields: cluster (must be a string, got boolean), namespace (must be a string, got object)",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// checkHelmCollisions
+// ---------------------------------------------------------------------------
+
+Deno.test("checkHelmCollisions — no collisions returns empty", () => {
+  const helm = {
+    gatling: { parallelism: 2 },
+    resources: { requests: { cpu: "4" } },
+  };
+  assertEquals(checkHelmCollisions(helm), []);
+});
+
+Deno.test("checkHelmCollisions — detects nested collision", () => {
+  const helm = {
+    gatling: { image: { name: "override" } },
+  };
+  assertEquals(checkHelmCollisions(helm), ["gatling.image.name"]);
+});
+
+Deno.test("checkHelmCollisions — detects multiple collisions", () => {
+  const helm = {
+    gatling: {
+      cluster_name: "wrong",
+      simulationClass: "wrong",
+      image: { name: "wrong", repository: "wrong" },
+    },
+  };
+  const collisions = checkHelmCollisions(helm);
+  assertEquals(collisions.includes("gatling.cluster_name"), true);
+  assertEquals(collisions.includes("gatling.simulationClass"), true);
+  assertEquals(collisions.includes("gatling.image.name"), true);
+  assertEquals(collisions.includes("gatling.image.repository"), true);
+  assertEquals(collisions.length, 4);
 });
 
 /** Helper to capture an Error from a throwing function. */

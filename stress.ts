@@ -17,12 +17,12 @@
  *   concurrently via a separate AbortController, killed in finally.
  */
 import { parseArgs } from "@std/cli/parse-args";
-import { parse as parseYaml } from "@std/yaml";
+import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import $ from "@david/dax";
 
 const POLL_INTERVAL = 5_000;
 const DEFAULT_CONFIG = "stress.yaml" as const;
-const DEFAULT_VALUES = "values.yaml" as const;
+const VERSION = "0.1.0";
 
 /** Embedded config template — written to disk by --init. */
 const CONFIG_TEMPLATE = `\
@@ -38,32 +38,29 @@ namespace: my-namespace
 # What to run
 release: my-load-test
 chart: my-repo/my-chart
-values: values.yaml
 simulation: com.example.loadtest.MySimulation
-`;
+image: my-load-test
+repository: my-registry.example.com/my-repo
 
-/** Embedded helm values template — written to disk by --init. */
-const VALUES_TEMPLATE = `\
-# values.yaml — Helm values for the load test chart.
-# Edit the values below for your project.
+# How long to wait for pods to become ready (seconds, default: 600 = 10 min)
+# pod_timeout: 600
 
-gatling:
-  cluster_name: "my-cluster"
-  image:
-    name: "my-load-test"
-    repository: "my-registry.example.com/my-repo"
-  parallelism: 1
-  simulationClass: "com.example.loadtest.MySimulation"
-  env:
-    - name: BASE_URL
-      value: "https://my-service.example.com"
-resources:
-  requests:
-    cpu: "6"
-    memory: "8Gi"
-  limits:
-    cpu: "10"
-    memory: "12Gi"
+# Helm values — passed directly to helm install -f <tempfile>.
+# Fields derived from above (cluster_name, image.*, simulationClass)
+# are injected automatically via --set. Don't duplicate them here.
+helm:
+  gatling:
+    parallelism: 1
+    env:
+      - name: BASE_URL
+        value: "https://my-service.example.com"
+  resources:
+    requests:
+      cpu: "6"
+      memory: "8Gi"
+    limits:
+      cpu: "10"
+      memory: "12Gi"
 `;
 
 /** Project-specific configuration loaded from stress.yaml. */
@@ -74,8 +71,11 @@ interface Config {
   readonly namespace: string;
   readonly release: string;
   readonly chart: string;
-  readonly values: string;
   readonly simulation: string;
+  readonly image: string;
+  readonly repository: string;
+  readonly helm: Record<string, unknown> | null;
+  readonly pod_timeout: number;
 }
 
 const REQUIRED_CONFIG_FIELDS = [
@@ -85,9 +85,51 @@ const REQUIRED_CONFIG_FIELDS = [
   "namespace",
   "release",
   "chart",
-  "values",
   "simulation",
+  "image",
+  "repository",
 ] as const;
+
+/**
+ * Helm key paths injected automatically via --set during helm install.
+ * If any of these appear in the user's helm: block, they will be silently
+ * overridden. checkHelmCollisions detects this and warns the user.
+ */
+const INJECTED_HELM_KEYS = [
+  "gatling.cluster_name",
+  "gatling.image.name",
+  "gatling.image.repository",
+  "gatling.image.tag",
+  "gatling.simulationClass",
+] as const;
+
+/**
+ * Walks a nested object and returns all dot-path keys that collide with
+ * the injected --set keys. Used to warn the user before helm install.
+ */
+export function checkHelmCollisions(
+  helm: Record<string, unknown>,
+  injectedKeys: readonly string[] = INJECTED_HELM_KEYS,
+): string[] {
+  const collisions: string[] = [];
+  const injectedSet = new Set(injectedKeys);
+
+  function walk(obj: Record<string, unknown>, prefix: string): void {
+    for (const key of Object.keys(obj)) {
+      const path = prefix ? `${prefix}.${key}` : key;
+      if (injectedSet.has(path)) {
+        collisions.push(path);
+      }
+      const val = obj[key];
+      if (val !== null && typeof val === "object" && !Array.isArray(val)) {
+        walk(val as Record<string, unknown>, path);
+      }
+    }
+  }
+
+  walk(helm, "");
+  return collisions;
+}
 
 /**
  * Validates raw parsed YAML into a Config object.
@@ -99,19 +141,46 @@ export function parseConfig(raw: unknown): Config {
   }
 
   const obj = raw as Record<string, unknown>;
-  const errors: string[] = [];
+  const missing: string[] = [];
+  const invalid: string[] = [];
 
   for (const field of REQUIRED_CONFIG_FIELDS) {
     const val = obj[field];
-    if (typeof val !== "string" || val.trim().length === 0) {
-      errors.push(field);
+    if (val === undefined || val === null) {
+      missing.push(field);
+    } else if (typeof val !== "string") {
+      invalid.push(`${field} (must be a string, got ${typeof val})`);
+    } else if (val.trim().length === 0) {
+      missing.push(field);
     }
   }
 
-  if (errors.length > 0) {
-    throw new Error(
-      `config: missing or empty required fields: ${errors.join(", ")}`,
-    );
+  // helm: is optional, but if present must be an object
+  if (obj.helm !== undefined && obj.helm !== null) {
+    if (typeof obj.helm !== "object" || Array.isArray(obj.helm)) {
+      invalid.push("helm (must be a YAML mapping)");
+    }
+  }
+
+  // pod_timeout: optional, defaults to 600, must be a positive number
+  let podTimeout = 600;
+  if (obj.pod_timeout !== undefined && obj.pod_timeout !== null) {
+    if (typeof obj.pod_timeout !== "number" || obj.pod_timeout <= 0) {
+      invalid.push("pod_timeout (must be a positive number)");
+    } else {
+      podTimeout = obj.pod_timeout;
+    }
+  }
+
+  if (missing.length > 0 || invalid.length > 0) {
+    const parts: string[] = [];
+    if (missing.length > 0) {
+      parts.push(`missing or empty required fields: ${missing.join(", ")}`);
+    }
+    if (invalid.length > 0) {
+      parts.push(`invalid fields: ${invalid.join(", ")}`);
+    }
+    throw new Error(`config: ${parts.join("; ")}`);
   }
 
   return {
@@ -121,8 +190,11 @@ export function parseConfig(raw: unknown): Config {
     namespace: obj.namespace as string,
     release: obj.release as string,
     chart: obj.chart as string,
-    values: obj.values as string,
     simulation: obj.simulation as string,
+    image: obj.image as string,
+    repository: obj.repository as string,
+    helm: (obj.helm as Record<string, unknown>) ?? null,
+    pod_timeout: podTimeout,
   };
 }
 
@@ -139,7 +211,14 @@ async function loadConfig(configPath: string): Promise<Config> {
     }
     throw e;
   }
-  const raw = parseYaml(text);
+  let raw: unknown;
+  try {
+    raw = parseYaml(text);
+  } catch (e) {
+    throw new Error(
+      `Failed to parse ${configPath}: ${(e as Error).message}`,
+    );
+  }
   return parseConfig(raw);
 }
 
@@ -174,25 +253,48 @@ Modes:
   --mode=run --image-tag=<tag>   Run load test
   --mode=status                  Show pod status
   --mode=logs                    Stream runner logs
+  --mode=clean                   Remove helm release
 
 Options:
   --config=<path>   Config file (default: stress.yaml)
-  --dry-run         Show commands without executing (mode=run only)
+  --dry-run         Show commands without executing (mode=run/clean)
 
 Setup:
   --init            Generate config from template
   --doctor          Check prerequisites and config
+  --version         Show version
   --help            Show this help
+
+Examples:
+  stress --init                                    Generate config template
+  stress --doctor                                  Check prerequisites
+  stress --mode=run --image-tag=abc123             Run load test
+  stress --mode=run --image-tag=abc123 --dry-run   Preview without executing
+  stress --mode=status                             Check pod status
+  stress --mode=logs                               Stream runner logs
+  stress --mode=clean                              Remove helm release
 `.trim();
 
 const abort = new AbortController();
 let interrupted = false;
 
 /** Tagged union — each variant maps to a CLI action dispatched by main(). */
-type CLI = CLIHelp | CLIInit | CLIDoctor | CLIRun | CLIStatus | CLILogs;
+type CLI =
+  | CLIHelp
+  | CLIVersion
+  | CLIInit
+  | CLIDoctor
+  | CLIRun
+  | CLIStatus
+  | CLILogs
+  | CLIClean;
 
 type CLIHelp = {
   readonly tag: "help";
+};
+
+type CLIVersion = {
+  readonly tag: "version";
 };
 
 type CLIInit = {
@@ -222,15 +324,25 @@ type CLILogs = {
   readonly config: string;
 };
 
+type CLIClean = {
+  readonly tag: "clean";
+  readonly config: string;
+  readonly dryRun: boolean;
+};
+
 /** Parses CLI arguments into a tagged union variant for exhaustive dispatch. */
 export function CLIParse(args: string[]): CLI {
   const flags = parseArgs(args, {
     string: ["mode", "image-tag", "config"],
-    boolean: ["dry-run", "help", "init", "doctor"],
+    boolean: ["dry-run", "help", "version", "init", "doctor"],
     default: { "dry-run": false },
   });
 
   const config = flags.config ?? DEFAULT_CONFIG;
+
+  if (flags.version) {
+    return { tag: "version" };
+  }
 
   if (flags.help || args.length === 0) {
     return { tag: "help" };
@@ -260,9 +372,11 @@ export function CLIParse(args: string[]): CLI {
       return { tag: "status", config };
     case "logs":
       return { tag: "logs", config };
+    case "clean":
+      return { tag: "clean", config, dryRun: flags["dry-run"] };
     default:
       throw new Error(
-        `Unknown mode: ${flags.mode}, use "run", "status", or "logs".`,
+        `Unknown mode: ${flags.mode}, use "run", "status", "logs", or "clean".`,
       );
   }
 }
@@ -393,15 +507,19 @@ export function interruptibleSleep(
 }
 
 /**
- * Polls `fn` every `intervalMs` until it returns true, or signal is aborted.
- * Returns true if fn completed successfully, false if aborted.
+ * Polls `fn` every `intervalMs` until it returns true, signal is aborted,
+ * or `maxMs` milliseconds have elapsed (if provided).
+ * Returns true if fn completed successfully, false if aborted or timed out.
  */
 export async function pollUntil(
   fn: () => Promise<boolean>,
   intervalMs: number,
   signal: AbortSignal,
+  maxMs?: number,
 ): Promise<boolean> {
+  const start = Date.now();
   while (!signal.aborted) {
+    if (maxMs !== undefined && Date.now() - start >= maxMs) return false;
     if (await fn()) return true;
     const result = await interruptibleSleep(intervalMs, signal);
     if (result === "aborted") return false;
@@ -422,8 +540,8 @@ function printConfig(cli: CLIRun, cfg: Config): void {
     `  Release:      ${cfg.release}`,
     `  Chart:        ${cfg.chart}`,
     `  Image tag:    ${cli.imageTag}`,
+    `  Image:        ${cfg.repository}/${cfg.image}`,
     `  Simulation:   ${simulationShort(cfg)}`,
-    `  Values:       ${cfg.values}`,
     "  ─────────────────────────────────────────────────────────",
     "  Pipeline:",
     `    1.  aws-vault exec ${cfg.profile} -- env`,
@@ -502,9 +620,17 @@ async function getAwsEnv(cfg: Config): Promise<Record<string, string>> {
   }
 
   cmd(`aws-vault exec ${cfg.profile} --prompt=osascript -- env`);
-  const raw = await $`aws-vault exec ${cfg.profile} --prompt=osascript -- env`
-    .quiet()
-    .text();
+  let raw: string;
+  try {
+    raw = await $`aws-vault exec ${cfg.profile} --prompt=osascript -- env`
+      .quiet()
+      .text();
+  } catch {
+    throw new Error(
+      `aws-vault exec failed for profile "${cfg.profile}". ` +
+        "Check that the profile exists in ~/.aws/config and that your MFA device is accessible.",
+    );
+  }
   const env = parseAwsEnv(raw);
   ok(`captured ${Object.keys(env).length} AWS env vars via aws-vault`);
   printAwsEnv(env);
@@ -558,12 +684,42 @@ async function helmInstall(
   imageTag: string,
   dryRun: boolean,
 ): Promise<void> {
+  const setFlags = [
+    `gatling.cluster_name=${cfg.cluster}`,
+    `gatling.image.name=${cfg.image}`,
+    `gatling.image.repository=${cfg.repository}`,
+    `gatling.image.tag=${imageTag}`,
+    `gatling.simulationClass=${cfg.simulation}`,
+  ];
+
+  const setDisplay = setFlags.map((f) => `        --set ${f}`).join(" \\\n");
   const dryFlag = dryRun ? " \\\n        --dry-run" : "";
+
+  let valuesFileArg = "";
+  let tempValuesPath: string | null = null;
+
+  if (cfg.helm) {
+    const collisions = checkHelmCollisions(cfg.helm);
+    for (const key of collisions) {
+      $.logWarn(
+        "Warning",
+        `helm values key '${key}' will be overridden by --set`,
+      );
+    }
+
+    tempValuesPath = await Deno.makeTempFile({
+      prefix: "stress-values-",
+      suffix: ".yaml",
+    });
+    await Deno.writeTextFile(
+      tempValuesPath,
+      stringifyYaml(cfg.helm as Record<string, unknown>),
+    );
+    valuesFileArg = ` \\\n        -f ${tempValuesPath}`;
+  }
+
   cmd(
-    `helm -n ${cfg.namespace} install ${cfg.release} ${cfg.chart} \\\n` +
-      `        -f ${cfg.values} \\\n` +
-      `        --set gatling.image.tag=${imageTag} \\\n` +
-      `        --set gatling.simulationClass=${cfg.simulation}${dryFlag}`,
+    `helm -n ${cfg.namespace} install ${cfg.release} ${cfg.chart}${valuesFileArg} \\\n${setDisplay}${dryFlag}`,
   );
 
   const args = [
@@ -573,23 +729,47 @@ async function helmInstall(
     "install",
     cfg.release,
     cfg.chart,
-    "-f",
-    cfg.values,
-    "--set",
-    `gatling.image.tag=${imageTag}`,
-    "--set",
-    `gatling.simulationClass=${cfg.simulation}`,
   ];
+
+  if (tempValuesPath) {
+    args.push("-f", tempValuesPath);
+  }
+
+  for (const flag of setFlags) {
+    args.push("--set", flag);
+  }
   if (dryRun) args.push("--dry-run");
 
-  await $`${args}`
-    .env(awsEnv)
-    .quiet();
-  ok(
-    `release "${cfg.release}" installed${
-      dryRun ? " (dry-run)" : ""
-    } (image: ${imageTag}, sim: ${simulationShort(cfg)})`,
-  );
+  try {
+    const result = await $`${args}`
+      .env(awsEnv)
+      .noThrow()
+      .quiet("stdout")
+      .stderr("piped");
+    if (result.code !== 0) {
+      const stderr = result.stderrBytes
+        ? new TextDecoder().decode(result.stderrBytes).trim()
+        : "";
+      const detail = stderr ? `:\n${stderr}` : "";
+      throw new Error(
+        `helm install failed (exit ${result.code})${detail}\n` +
+          `Check that chart "${cfg.chart}" exists and helm repo is configured (helm repo list).`,
+      );
+    }
+    ok(
+      `release "${cfg.release}" installed${
+        dryRun ? " (dry-run)" : ""
+      } (image: ${imageTag}, sim: ${simulationShort(cfg)})`,
+    );
+  } finally {
+    if (tempValuesPath) {
+      try {
+        await Deno.remove(tempValuesPath);
+      } catch {
+        // best-effort cleanup
+      }
+    }
+  }
 }
 
 /**
@@ -606,11 +786,12 @@ async function waitForPods(
   awsEnv: Record<string, string>,
   cfg: Config,
   label: string,
+  timeoutMs: number,
 ): Promise<void> {
   let lastOutput = "";
   let pollCount = 0;
   let noPodsPrinted = false;
-  await pollUntil(
+  const ready = await pollUntil(
     async () => {
       pollCount++;
       const elapsed = Math.round((pollCount * POLL_INTERVAL) / 1000);
@@ -655,7 +836,16 @@ async function waitForPods(
     },
     POLL_INTERVAL,
     abort.signal,
+    timeoutMs,
   );
+
+  if (!ready && !abort.signal.aborted) {
+    const mins = Math.round(timeoutMs / 60_000);
+    throw new Error(
+      `Timed out after ${mins}m waiting for pods matching '${label}'. ` +
+        "Check cluster capacity, image pull status, and node selectors.",
+    );
+  }
 }
 
 /** Streams logs for pods matching `label` until they complete or SIGINT fires. */
@@ -702,7 +892,7 @@ async function monitorGatling(
         runnerLabel(cfg)
       } --no-headers  (polling every ${POLL_INTERVAL / 1000}s)`,
     );
-    await waitForPods(awsEnv, cfg, runnerLabel(cfg));
+    await waitForPods(awsEnv, cfg, runnerLabel(cfg), cfg.pod_timeout * 1000);
     if (abort.signal.aborted) return;
 
     $.logStep("Step 5b:", "Streaming runner logs...");
@@ -717,7 +907,7 @@ async function monitorGatling(
         reporterLabel(cfg)
       } --no-headers  (polling every ${POLL_INTERVAL / 1000}s)`,
     );
-    await waitForPods(awsEnv, cfg, reporterLabel(cfg));
+    await waitForPods(awsEnv, cfg, reporterLabel(cfg), cfg.pod_timeout * 1000);
     if (abort.signal.aborted) return;
 
     $.logStep("Step 5c:", "Streaming reporter logs...");
@@ -796,38 +986,38 @@ async function runLogs(cli: CLILogs, cfg: Config): Promise<void> {
 }
 
 /**
- * Writes config and values templates to disk.
- * Refuses if either file already exists.
+ * Writes config template to disk.
+ * Refuses if file already exists.
  */
 async function runInit(cli: CLIInit): Promise<void> {
-  const files = [
-    { path: cli.config, template: CONFIG_TEMPLATE },
-    { path: DEFAULT_VALUES, template: VALUES_TEMPLATE },
-  ];
+  try {
+    await Deno.stat(cli.config);
+    $.logError(
+      `${cli.config} already exists. Remove it first if you want to regenerate.`,
+    );
+    Deno.exit(1);
+  } catch (e) {
+    if (!(e instanceof Deno.errors.NotFound)) throw e;
+  }
 
-  // Check all files first — don't write anything if any exist
-  for (const file of files) {
-    try {
-      await Deno.stat(file.path);
+  try {
+    await Deno.writeTextFile(cli.config, CONFIG_TEMPLATE);
+  } catch (e) {
+    if (e instanceof Deno.errors.NotFound) {
       $.logError(
-        `${file.path} already exists. Remove it first if you want to regenerate.`,
+        `Cannot write ${cli.config}: parent directory does not exist.`,
       );
       Deno.exit(1);
-    } catch (e) {
-      if (!(e instanceof Deno.errors.NotFound)) throw e;
     }
+    throw e;
   }
-
-  for (const file of files) {
-    await Deno.writeTextFile(file.path, file.template);
-    $.logStep("Created", file.path);
-  }
-  $.logLight("  Edit both files with your project values.");
+  $.logStep("Created", cli.config);
+  $.logLight("  Edit it with your project values.");
 }
 
 /**
  * Checks prerequisites and config. Runs tool version checks, validates config
- * file, checks values file exists, and reports AWS credential status.
+ * file, reports helm block status, and reports AWS credential status.
  * Exit 0 if all required checks pass, exit 1 otherwise.
  */
 async function runDoctor(cli: CLIDoctor): Promise<void> {
@@ -885,14 +1075,22 @@ async function runDoctor(cli: CLIDoctor): Promise<void> {
     failures++;
   }
 
-  // Values file check (only if config loaded successfully)
+  // Helm values block — informational
   if (cfg) {
-    try {
-      await Deno.stat(cfg.values);
-      $.logStep("[PASS]", `values: ${cfg.values} exists`);
-    } catch {
-      $.logError(`[FAIL] values file not found at ${cfg.values}`);
-      failures++;
+    if (cfg.helm) {
+      $.logStep(
+        "[PASS]",
+        `helm values: ${Object.keys(cfg.helm).length} top-level keys`,
+      );
+      const collisions = checkHelmCollisions(cfg.helm);
+      for (const key of collisions) {
+        $.logWarn(
+          "[WARN]",
+          `helm key '${key}' will be overridden by --set — remove it from helm:`,
+        );
+      }
+    } else {
+      $.logStep("[INFO]", "helm values: none (only --set flags will be used)");
     }
   }
 
@@ -924,9 +1122,21 @@ async function runDoctor(cli: CLIDoctor): Promise<void> {
   }
 }
 
+/** Authenticates, then uninstalls the helm release. */
+async function runClean(cli: CLIClean, cfg: Config): Promise<void> {
+  $.logStep("Step 1:", "Authenticating with AWS vault...");
+  const awsEnv = await getAwsEnv(cfg);
+
+  $.logStep("Step 2:", "Updating EKS kubeconfig...");
+  await updateKubeconfig(awsEnv, cfg);
+
+  $.logStep("Clean:", "Uninstalling helm release...");
+  await helmUninstall(awsEnv, cfg, cli.dryRun);
+}
+
 /** Exhaustive dispatch for operational modes that require config. */
 async function execute(
-  cli: CLIRun | CLIStatus | CLILogs,
+  cli: CLIRun | CLIStatus | CLILogs | CLIClean,
   cfg: Config,
 ): Promise<void> {
   switch (cli.tag) {
@@ -936,6 +1146,8 @@ async function execute(
       return await runStatus(cli, cfg);
     case "logs":
       return await runLogs(cli, cfg);
+    case "clean":
+      return await runClean(cli, cfg);
     default: {
       const _exhaustive: never = cli;
       throw new Error(`Unreachable: ${_exhaustive}`);
@@ -957,9 +1169,14 @@ async function main(): Promise<void> {
     Deno.exit(1);
   }
 
-  // Short-circuit: help, init, doctor don't need config loaded
+  // Short-circuit: help, version, init, doctor don't need config loaded
   if (cli.tag === "help") {
     $.log(USAGE);
+    return;
+  }
+
+  if (cli.tag === "version") {
+    $.log(`stress v${VERSION}`);
     return;
   }
 
