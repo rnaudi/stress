@@ -1,20 +1,18 @@
 #!/usr/bin/env -S deno run --allow-run --allow-env --allow-read --allow-write
 /**
- * stress — Gatling load test runner for EKS.
+ * @module stress
  *
- * Replaces a manual multi-terminal workflow (aws-vault, kubectl, helm, log
- * tailing) with a single `--mode=run --image-tag=<tag>` invocation.
- * Project-specific values (cluster, namespace, chart, etc.) come from
- * stress.yaml (or a custom path via --config).
+ * Gatling load test runner for EKS. Replaces a manual multi-terminal workflow
+ * (aws-vault, kubectl, helm, log tailing) with a single
+ * `--mode=run --image-tag=<tag>` invocation. Project-specific values (cluster,
+ * namespace, chart, etc.) come from stress.yaml (or a custom path via --config).
  *
- * Design:
- * - Single-file script — all logic here, all tests in stress_test.ts.
- * - Tagged union CLI with exhaustive dispatch.
- * - AbortController for cancellation — module-level controller propagated to
- *   all subprocess `.signal()` calls. SIGINT sets `interrupted` flag so the
- *   finally block can clean up the helm release.
- * - Unawaited promises for background tasks — `kubectl get pod -w` runs
- *   concurrently via a separate AbortController, killed in finally.
+ * Single-file script — all logic here, all tests in stress_test.ts. The CLI is
+ * a tagged union with exhaustive dispatch. A module-level AbortController
+ * propagates to all subprocess `.signal()` calls; SIGINT sets an `interrupted`
+ * flag so the finally block can clean up the helm release. Background tasks
+ * like `kubectl get pod -w` run as unawaited promises on a separate
+ * AbortController, killed in finally.
  */
 import { parseArgs } from "@std/cli/parse-args";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
@@ -71,10 +69,13 @@ interface Config {
   readonly namespace: string;
   readonly release: string;
   readonly chart: string;
+  /** Fully-qualified Gatling simulation class name (e.g. com.example.MySimulation). */
   readonly simulation: string;
   readonly image: string;
   readonly repository: string;
+  /** Extra values passed to `helm install -f <tempfile>`, or null if none. */
   readonly helm: Record<string, unknown> | null;
+  /** Seconds to wait for pods before failing (default 600). */
   readonly pod_timeout: number;
 }
 
@@ -106,6 +107,12 @@ const INJECTED_HELM_KEYS = [
 /**
  * Walks a nested object and returns all dot-path keys that collide with
  * the injected --set keys. Used to warn the user before helm install.
+ *
+ * @example
+ * ```ts
+ * const helm = { gatling: { cluster_name: "x", parallelism: 1 } };
+ * checkHelmCollisions(helm); // ["gatling.cluster_name"]
+ * ```
  */
 export function checkHelmCollisions(
   helm: Record<string, unknown>,
@@ -134,6 +141,13 @@ export function checkHelmCollisions(
 /**
  * Validates raw parsed YAML into a Config object.
  * Reports all problems at once so the user can fix them in one pass.
+ *
+ * @example
+ * ```ts
+ * const raw = parseYaml(await Deno.readTextFile("stress.yaml"));
+ * const cfg = parseConfig(raw);
+ * console.log(cfg.cluster, cfg.namespace);
+ * ```
  */
 export function parseConfig(raw: unknown): Config {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
@@ -330,7 +344,14 @@ type CLIClean = {
   readonly dryRun: boolean;
 };
 
-/** Parses CLI arguments into a tagged union variant for exhaustive dispatch. */
+/** Parses CLI arguments into a tagged union variant for exhaustive dispatch.
+ *
+ * @example
+ * ```ts
+ * const cli = CLIParse(["--mode=run", "--image-tag=abc123"]);
+ * // { tag: "run", config: "stress.yaml", imageTag: "abc123", dryRun: false }
+ * ```
+ */
 export function CLIParse(args: string[]): CLI {
   const stringFlags = ["mode", "image-tag", "config"];
   const booleanFlags = ["dry-run", "help", "version", "init", "doctor"];
@@ -395,6 +416,12 @@ export function CLIParse(args: string[]): CLI {
 /**
  * Parses raw `env` output and returns only AWS_* environment variables.
  * Handles values containing '=' characters (e.g. session tokens).
+ *
+ * @example
+ * ```ts
+ * const raw = "HOME=/Users/me\nAWS_REGION=us-east-1\nAWS_ACCESS_KEY_ID=AKIA...";
+ * parseAwsEnv(raw); // { AWS_REGION: "us-east-1", AWS_ACCESS_KEY_ID: "AKIA..." }
+ * ```
  */
 export function parseAwsEnv(raw: string): Record<string, string> {
   const env: Record<string, string> = {};
@@ -424,6 +451,14 @@ type AwsDetection =
  * Inspects a flat env record for AWS credentials.
  * Returns "found" with all AWS_* vars if all 3 required vars are present,
  * "partial" if some but not all are present, or "none" if zero are present.
+ *
+ * @example
+ * ```ts
+ * const env = { AWS_ACCESS_KEY_ID: "AKIA...", AWS_SECRET_ACCESS_KEY: "secret", AWS_SESSION_TOKEN: "tok" };
+ * detectAwsEnv(env); // { tag: "found", env: { ... } }
+ *
+ * detectAwsEnv({}); // { tag: "none" }
+ * ```
  */
 export function detectAwsEnv(
   env: Record<string, string>,
@@ -473,6 +508,14 @@ const NOT_READY_STATUSES: ReadonlySet<string> = new Set([
  * Parses one line of `kubectl get pods --no-headers` output.
  * Format: NAME  READY  STATUS  RESTARTS  AGE
  * Returns { name, status } or null for empty/unparseable lines.
+ *
+ * @example
+ * ```ts
+ * parsePodStatus("my-runner-abc   1/1   Running   0   2m");
+ * // { name: "my-runner-abc", status: "Running" }
+ *
+ * parsePodStatus(""); // null
+ * ```
  */
 export function parsePodStatus(
   line: string,
@@ -487,6 +530,14 @@ export function parsePodStatus(
  * (main containers have started). Not-ready: Pending, ContainerCreating,
  * PodInitializing, Init:* (e.g. Init:0/1). Everything else is ready
  * (Running, Completed, CrashLoopBackOff, Error, etc.).
+ *
+ * @example
+ * ```ts
+ * isPodReady("Running");            // true
+ * isPodReady("Completed");          // true
+ * isPodReady("Pending");            // false
+ * isPodReady("Init:0/1");           // false
+ * ```
  */
 export function isPodReady(status: string): boolean {
   if (NOT_READY_STATUSES.has(status)) return false;
@@ -498,6 +549,13 @@ export function isPodReady(status: string): boolean {
  * Sleeps for `ms` milliseconds, but resolves early if `signal` is aborted.
  * Returns "timeout" on normal completion, "aborted" if interrupted.
  * Properly cleans up the timer on abort (unlike $.sleep which leaks).
+ *
+ * @example
+ * ```ts
+ * const ac = new AbortController();
+ * const result = await interruptibleSleep(5_000, ac.signal);
+ * if (result === "aborted") console.log("cancelled early");
+ * ```
  */
 export function interruptibleSleep(
   ms: number,
@@ -521,6 +579,18 @@ export function interruptibleSleep(
  * Polls `fn` every `intervalMs` until it returns true, signal is aborted,
  * or `maxMs` milliseconds have elapsed (if provided).
  * Returns true if fn completed successfully, false if aborted or timed out.
+ *
+ * @example
+ * ```ts
+ * const ac = new AbortController();
+ * const ready = await pollUntil(
+ *   async () => (await fetchStatus()) === "Running",
+ *   5_000,
+ *   ac.signal,
+ *   60_000,
+ * );
+ * if (!ready) console.log("timed out or cancelled");
+ * ```
  */
 export async function pollUntil(
   fn: () => Promise<boolean>,
@@ -580,7 +650,14 @@ function ok(s: string): void {
   $.logStep("  OK", s);
 }
 
-/** Redacts a value: shows first 4 chars + **** for secrets, full value for non-sensitive. */
+/** Redacts a value: shows first 4 chars + **** for secrets, full value for non-sensitive.
+ *
+ * @example
+ * ```ts
+ * redact("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE"); // "AKIA****"
+ * redact("AWS_REGION", "us-east-1");                    // "us-east-1"
+ * ```
+ */
 export function redact(key: string, value: string): string {
   if (!SENSITIVE_AWS_VARS.has(key)) return value;
   if (value.length <= 4) return "****";

@@ -1,3 +1,10 @@
+/**
+ * @module stress_test
+ *
+ * Tests for the exported API of stress.ts. Organized by function with
+ * section separators (CLIParse, parseAwsEnv, detectAwsEnv, etc.).
+ * Each section covers happy paths, edge cases, and error conditions.
+ */
 import { assertEquals, assertThrows } from "@std/assert";
 import {
   checkHelmCollisions,
