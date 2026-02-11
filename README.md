@@ -2,41 +2,22 @@
 
 Gatling load tests on EKS, one command.
 
-## Why?
-
-**Running a Gatling load test on EKS is a 4-terminal affair.**
-
-Open a shell for `aws-vault exec`. Another for `kubectl`. Another for
-`helm install`. Another to tail logs. Wait for pods. Wait for runners. Wait for
-reporters. Copy the report URL. Clean up.
-
-`stress` replaces all of that with one command:
-
-```bash
-stress --mode=run --image-tag=abc123
-```
-
-It handles auth, kubeconfig, helm install, pod polling, log streaming, and
-cleanup on Ctrl+C. You watch the output. When it's done, you're done.
-
 ## Prerequisites
 
-Requires [aws-vault](https://github.com/99designs/aws-vault),
-[kubectl](https://kubernetes.io/docs/tasks/tools/), and
-[helm](https://helm.sh/docs/intro/install/).
+[aws-vault](https://github.com/99designs/aws-vault), [kubectl](https://kubernetes.io/docs/tasks/tools/), [helm](https://helm.sh/docs/intro/install/)
 
 ```bash
 brew install aws-vault kubectl helm
 ```
 
-## Installation
+## Install
 
 ```bash
 curl -L https://github.com/rnaudi/stress/releases/latest/download/stress-darwin-arm64 -o /usr/local/bin/stress
 chmod +x /usr/local/bin/stress
 ```
 
-### From source
+From source:
 
 ```bash
 deno compile --allow-run --allow-env --allow-read --allow-write --output stress stress.ts
@@ -46,60 +27,24 @@ deno compile --allow-run --allow-env --allow-read --allow-write --output stress 
 ## Quick Start
 
 ```bash
-# 1. Generate config
-stress --init
-
-# 2. Edit with your project values
-vim stress.yaml
-
-# 3. Verify everything is set up
-stress --doctor
-
-# 4. Run
+stress --init            # generate stress.yaml
+vim stress.yaml          # fill in your project values
+stress --doctor          # verify tools + config
 stress --mode=run --image-tag=h69
 ```
 
-That's it. Three commands from install to running load test.
+## Usage
 
-## Common Use Cases
-
-**Dry run first:**
-
-```bash
-stress --mode=run --image-tag=h69 --dry-run
-```
-
-Renders helm templates without deploying. Steps 1-4 run, pod monitoring is
-skipped.
-
-**Check pod status (from another terminal):**
-
-```bash
-stress --mode=status
-```
-
-**Tail runner logs (from another terminal):**
-
-```bash
-stress --mode=logs
-```
-
-**Multiple projects:**
-
-```bash
-stress --init --config=staging.yaml
-stress --mode=run --image-tag=h69 --config=staging.yaml
-```
-
-**Interrupt safely:**
-
-Ctrl+C during a run cleans up the helm release automatically. No orphaned pods.
+- `--dry-run` — render helm templates without deploying
+- `--mode=status` — check pod status (from another terminal)
+- `--mode=logs` — tail runner logs (from another terminal)
+- `--config=file.yaml` — use a different config file
+- `--doctor` — verify tools, config, and AWS credentials
+- `Ctrl+C` — cleans up the helm release automatically, no orphaned pods
 
 ## Configuration
 
-`stress --init` generates one file:
-
-### `stress.yaml` — where and what to run
+`stress --init` generates `stress.yaml`:
 
 ```yaml
 # Where to run
@@ -116,8 +61,7 @@ image: my-load-test
 repository: my-registry.example.com/my-repo
 
 # Helm values — passed directly to helm install -f <tempfile>.
-# Fields derived from above (cluster_name, image.*, simulationClass)
-# are injected automatically via --set. Don't duplicate them here.
+# Auto-injected fields (see below) don't need to be here.
 helm:
   gatling:
     parallelism: 1
@@ -133,35 +77,13 @@ helm:
       memory: "12Gi"
 ```
 
-The top-level fields are required. The `helm:` block is optional — if your chart
-can be fully configured via `--set` flags, you can omit it.
+Auto-injected via `--set` (don't duplicate in `helm:`):
 
-The following helm values are injected automatically from the top-level fields
-via `--set` (don't duplicate them in `helm:`):
-
-- `gatling.cluster_name` from `cluster`
-- `gatling.image.name` from `image`
-- `gatling.image.repository` from `repository`
-- `gatling.image.tag` from `--image-tag`
-- `gatling.simulationClass` from `simulation`
-
-## Verify Setup
-
-```bash
-stress --doctor
-```
-
-```
-[PASS] aws-vault: 7.2.0
-[PASS] kubectl: v1.28.2
-[PASS] helm: v3.14.0
-[PASS] stress.yaml: valid (cluster=analytics, namespace=load-test)
-[PASS] helm values: 2 top-level keys
-[INFO] AWS credentials: not in env (will prompt via aws-vault)
-```
-
-Checks tools, config, helm values block, and AWS credential status. Exit 1 if
-anything required is missing.
+- `gatling.cluster_name` ← `cluster`
+- `gatling.image.name` ← `image`
+- `gatling.image.repository` ← `repository`
+- `gatling.image.tag` ← `--image-tag`
+- `gatling.simulationClass` ← `simulation`
 
 ## Development
 
@@ -172,4 +94,4 @@ deno lint             # lint
 deno check stress.ts  # type-check
 ```
 
-See [docs/spec.md](docs/spec.md) for engineering internals.
+See [docs/spec.md](docs/spec.md) for internals.

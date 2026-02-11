@@ -136,6 +136,22 @@ Deno.test("CLIParse — mode=clean with dry-run", () => {
   });
 });
 
+Deno.test("CLIParse — unknown flag throws", () => {
+  assertThrows(
+    () => CLIParse(["--mode=run", "--image-tag=abc", "--typo-flag"]),
+    Error,
+    "Unknown flag: --typo-flag",
+  );
+});
+
+Deno.test("CLIParse — unexpected positional argument throws", () => {
+  assertThrows(
+    () => CLIParse(["--mode=run", "--image-tag=abc", "extra"]),
+    Error,
+    "Unexpected argument: extra",
+  );
+});
+
 // ---------------------------------------------------------------------------
 // parseAwsEnv
 // ---------------------------------------------------------------------------

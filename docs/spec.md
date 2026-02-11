@@ -161,7 +161,9 @@ type CLIClean = {
 ### Parsing
 
 `CLIParse(args: string[]): CLI` — parses CLI arguments using
-`@std/cli/parse-args` into a tagged union. Short-circuit priority:
+`@std/cli/parse-args` into a tagged union. Rejects unknown flags (throws
+`Unknown flag: --<name>`) and unexpected positional arguments (throws
+`Unexpected argument: <arg>`). Short-circuit priority:
 
 1. `--version` → `{ tag: "version" }`
 2. `--help` or no args → `{ tag: "help" }`
@@ -172,7 +174,8 @@ type CLIClean = {
 
 ### Dispatch (`main()`)
 
-Short-circuit order in `main()`:
+Short-circuit order in `main()` (called via top-level `await main()` at module
+boundary):
 
 1. Parse args → CLI tagged union (exit 1 on error)
 2. If `version` → print version, exit 0
@@ -479,12 +482,13 @@ Same pattern as 5b but with `job-name=<release>-reporter`.
 
 ## Mode: status
 
-`runStatus(cli, cfg)` — runs Steps 1-2 (auth + kubeconfig), then prints current
-pod status for both runner and reporter jobs.
+`runStatus(_cli, cfg)` — runs Steps 1-2 (auth + kubeconfig), then prints current
+pod status for both runner and reporter jobs. Both `kubectl get pods` calls use
+`.noThrow()` so that missing pods for either job don't abort the status check.
 
 ## Mode: logs
 
-`runLogs(cli, cfg)` — runs Steps 1-2 (auth + kubeconfig), then streams runner
+`runLogs(_cli, cfg)` — runs Steps 1-2 (auth + kubeconfig), then streams runner
 logs.
 
 ## Mode: clean
@@ -506,10 +510,11 @@ When `--dry-run` is passed with `--mode=run` or `--mode=clean`:
 
 - Each step logs a message before executing
 - All dax commands throw on non-zero exit by default — script aborts on failure
-- `helm uninstall` is the only command using `.noThrow()` (release may not
-  exist)
+- `helm uninstall` and `runStatus` pod queries use `.noThrow()` (release/pods
+  may not exist)
 - No timeout on test execution — runs until completion or Ctrl+C
-- `CLIParse` throws with usage message on invalid/missing arguments
+- `CLIParse` throws with usage message on invalid/missing arguments, and rejects
+  unknown flags / unexpected positional arguments
 - `loadConfig` gives actionable errors: "not found — run stress --init" or lists
   all missing/empty fields at once
 - `loadConfig` wraps YAML parse errors with the config file path:
@@ -567,12 +572,18 @@ let interrupted = false;
 
 ### SIGINT handler
 
-Registered in `main()` before `execute(cli, cfg)`:
+Registered in `main()` before `execute(cli, cfg)`. Guarded against re-entrant
+calls — first Ctrl+C initiates graceful cleanup, second Ctrl+C force-quits
+immediately via `Deno.exit(130)`:
 
 ```ts
 Deno.addSignalListener("SIGINT", () => {
+  if (interrupted) {
+    Deno.exit(130);
+  }
   interrupted = true;
   $.logWarn("\nInterrupted", "Ctrl+C received, cleaning up...");
+  $.logWarn("", "Press Ctrl+C again to force quit.");
   abort.abort();
 });
 ```
@@ -627,7 +638,7 @@ credentials, EKS clusters, or helm repos needed.
 
 Run: `deno task test`
 
-### `CLIParse` tests (17 tests)
+### `CLIParse` tests (19 tests)
 
 | Test case                   | Input                                           | Expected                                                                |
 | --------------------------- | ----------------------------------------------- | ----------------------------------------------------------------------- |
@@ -648,6 +659,8 @@ Run: `deno task test`
 | --version over --help       | `--version --help`                              | `{ tag: "version" }`                                                    |
 | mode=clean                  | `--mode=clean`                                  | `{ tag: "clean", config: "stress.yaml", dryRun: false }`                |
 | mode=clean with dry-run     | `--mode=clean --dry-run`                        | `{ tag: "clean", config: "stress.yaml", dryRun: true }`                 |
+| unknown flag                | `--mode=run --image-tag=abc --typo-flag`        | throws `"Unknown flag: --typo-flag"`                                    |
+| unexpected positional arg   | `--mode=run --image-tag=abc extra`              | throws `"Unexpected argument: extra"`                                   |
 
 ### `parseAwsEnv` tests (4 tests)
 
@@ -742,7 +755,7 @@ Run: `deno task test`
 | waits interval between polls      | fn returns true on 2nd call, interval 50ms               | `true`, elapsed ~50ms            |
 | returns false when maxMs exceeded | fn always returns false, maxMs 80ms, interval 20ms       | `false`, elapsed ~80ms           |
 
-### Total: 65 tests
+### Total: 67 tests
 
 ## Deno Permissions
 

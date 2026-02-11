@@ -332,11 +332,22 @@ type CLIClean = {
 
 /** Parses CLI arguments into a tagged union variant for exhaustive dispatch. */
 export function CLIParse(args: string[]): CLI {
+  const stringFlags = ["mode", "image-tag", "config"];
+  const booleanFlags = ["dry-run", "help", "version", "init", "doctor"];
   const flags = parseArgs(args, {
-    string: ["mode", "image-tag", "config"],
-    boolean: ["dry-run", "help", "version", "init", "doctor"],
+    string: stringFlags,
+    boolean: booleanFlags,
     default: { "dry-run": false },
   });
+
+  const knownKeys = new Set([...stringFlags, ...booleanFlags, "_"]);
+  const unknown = Object.keys(flags).filter((k) => !knownKeys.has(k));
+  if (unknown.length > 0) {
+    throw new Error(`Unknown flag: --${unknown[0]}`);
+  }
+  if (flags._.length > 0) {
+    throw new Error(`Unexpected argument: ${flags._[0]}`);
+  }
 
   const config = flags.config ?? DEFAULT_CONFIG;
 
@@ -579,6 +590,7 @@ export function redact(key: string, value: string): string {
 /** Prints AWS env vars with redacted sensitive values, aligned. */
 function printAwsEnv(env: Record<string, string>): void {
   const keys = Object.keys(env).sort();
+  if (keys.length === 0) return;
   const maxLen = Math.max(...keys.map((k) => k.length));
   for (const key of keys) {
     const padded = key.padEnd(maxLen);
@@ -953,8 +965,7 @@ async function runPipeline(cli: CLIRun, cfg: Config): Promise<void> {
 }
 
 /** Authenticates, then shows current runner and reporter pod status. */
-async function runStatus(cli: CLIStatus, cfg: Config): Promise<void> {
-  void cli;
+async function runStatus(_cli: CLIStatus, cfg: Config): Promise<void> {
   $.logStep("Step 1:", "Authenticating with AWS vault...");
   const awsEnv = await getAwsEnv(cfg);
 
@@ -964,7 +975,8 @@ async function runStatus(cli: CLIStatus, cfg: Config): Promise<void> {
   $.logStep("Status:", "Current pod status");
   cmd(`kubectl get pods -n ${cfg.namespace} -l ${runnerLabel(cfg)}`);
   await $`kubectl get pods -n ${cfg.namespace} -l ${runnerLabel(cfg)}`
-    .env(awsEnv);
+    .env(awsEnv)
+    .noThrow();
 
   cmd(`kubectl get pods -n ${cfg.namespace} -l ${reporterLabel(cfg)}`);
   await $`kubectl get pods -n ${cfg.namespace} -l ${reporterLabel(cfg)}`
@@ -973,8 +985,7 @@ async function runStatus(cli: CLIStatus, cfg: Config): Promise<void> {
 }
 
 /** Authenticates, then streams runner logs for an in-progress or completed run. */
-async function runLogs(cli: CLILogs, cfg: Config): Promise<void> {
-  void cli;
+async function runLogs(_cli: CLILogs, cfg: Config): Promise<void> {
   $.logStep("Step 1:", "Authenticating with AWS vault...");
   const awsEnv = await getAwsEnv(cfg);
 
@@ -1199,8 +1210,12 @@ async function main(): Promise<void> {
   }
 
   Deno.addSignalListener("SIGINT", () => {
+    if (interrupted) {
+      Deno.exit(130);
+    }
     interrupted = true;
     $.logWarn("\nInterrupted", "Ctrl+C received, cleaning up...");
+    $.logWarn("", "Press Ctrl+C again to force quit.");
     abort.abort();
   });
 
@@ -1214,5 +1229,5 @@ async function main(): Promise<void> {
 }
 
 if (import.meta.main) {
-  main();
+  await main();
 }
