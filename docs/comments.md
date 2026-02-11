@@ -4,17 +4,11 @@ Great comments are documentation. Every public item should carry a doc comment (
 
 ## Structuring doc comments
 
-Reserve top-level Markdown headings (`# Overview`, `# Design`, `# Why`) for module or package docs that benefit from a table-of-contents view.
+The taxonomy categories below (Function, Design, Why, Teacher, Checklist, etc.) describe the **purpose** of a comment, not labels to insert into the text. Do not use Markdown headings like `# Design` or `# Why` inside doc comments. Write flowing prose instead -- a concise summary followed by rationale, constraints, or examples as needed.
 
-For functions, classes, interfaces, and types, lead with a concise summary and keep any rationale in plain prose. Keep `@example` for runnable snippets because typedoc groups them automatically.
+For functions, classes, interfaces, and types, lead with a concise summary and keep any rationale in plain prose. Use `@example` for runnable snippets because typedoc groups them automatically.
 
-Module or entry-point files should start with a file-level `/** @module */` comment that follows the same structure so readers can jump directly to features, file layout, or operational notes. When helpful, module docs can mix in headings such as:
-- `# Overview` – summarize the intent and scope.
-- `# Design` – call out trade-offs, invariants, and concurrency rules.
-- `# Why` – explain non-obvious behaviors or ordering constraints.
-- `@example` – provide runnable snippets or pseudo-code sketches.
-- `# Limitations` or `# Follow-ups` – echo Debt or Checklist guidance when helpful.
-
+Module or entry-point files should start with a file-level `/** @module */` comment that covers intent, scope, design trade-offs, and non-obvious constraints in flowing prose so readers can orient themselves quickly.
 
 Example:
 
@@ -24,20 +18,16 @@ Example:
 /**
  * @module renderer
  *
- * Viewport renderer for the gh-log dashboard.
+ * Viewport renderer for the gh-log dashboard. Renders summary, detail, and
+ * tail panes using a terminal backend. Keeps interaction logic isolated so
+ * data and configuration layers stay testable.
  *
- * # Overview
- * Renders summary, detail, and tail panes. Keeps interaction
- * logic isolated so data and configuration layers stay testable.
+ * A single `AppState` orchestrates the active view and scroll state.
+ * `DetailMode` toggles between weekly and repo breakdown without
+ * reallocations. A shared render buffer avoids flicker while switching panes.
  *
- * # Design
- * - Single `AppState` orchestrates the active view and scroll state.
- * - `DetailMode` toggles between weekly and repo breakdown without reallocations.
- * - Shared render buffer avoids flicker while switching panes.
- *
- * # Why
- * Scroll math tracks both content height and viewport height so resizes never
- * trap the cursor below the fold.
+ * Scroll math tracks both content height and viewport height so resizes
+ * never trap the cursor below the fold.
  *
  * @example
  * ```ts
@@ -83,7 +73,7 @@ export async function fetchPRs(month: string): Promise<PullRequest[]> {
 ## Design comments
 
 - Describe the big idea for the file, module, or subsystem and the trade-offs you accepted.
-- Keep the rationale in clear sentences on public items so it lands in generated docs; reserve `# Design` headings for module-level file comments.
+- Keep the rationale in clear sentences on public items so it lands in generated docs.
 - Focus on invariants ("single writer, many readers"), concurrency or memory strategies, and what would break if the design changed.
 
 Example:
@@ -94,12 +84,10 @@ Example:
 /**
  * @module cache
  *
- * Cache layer for month-level PR aggregates.
- *
- * # Design
- * - Write-through cache keyed by `YYYY-MM` keeps CLI invocations quick.
- * - File locking ensures the CLI and TUI never stomp on each other.
- * - JSON payloads stay stable so older versions can read newer cache files.
+ * Cache layer for month-level PR aggregates. Uses a write-through cache
+ * keyed by `YYYY-MM` to keep CLI invocations quick. File locking ensures
+ * the CLI and TUI never stomp on each other. JSON payloads stay stable so
+ * older versions can read newer cache files.
  */
 ```
 
@@ -213,7 +201,7 @@ if (cacheSize > MAX_CACHE_BYTES) {
 
 ## Review checklist
 
-- [ ] Doc comments start with a concise summary; module docs use headings while item docs keep rationale in flowing prose.
+- [ ] Doc comments start with a concise summary; rationale follows in flowing prose.
 - [ ] Public APIs include `@example` when usage benefits from a snippet.
 - [ ] Design and Why rationales appear where the next maintainer will look first.
 - [ ] Checklist and Debt notes point to enforceable steps or tracked issues.
