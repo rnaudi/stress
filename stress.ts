@@ -664,7 +664,9 @@ function extractResources(
   helm: Record<string, unknown> | null,
 ): string {
   if (!helm) return "(default)";
-  const res = helm.resources as Record<string, Record<string, string>> | undefined;
+  const res = helm.resources as
+    | Record<string, Record<string, string>>
+    | undefined;
   if (!res) return "(default)";
   const req = res.requests;
   const lim = res.limits;

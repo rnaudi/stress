@@ -4,14 +4,20 @@ Gatling load tests on EKS, one command.
 
 ## Design
 
-- **Sandboxed by default.** Deno permissions: run, env, read, write. No network, no FFI, no ambient authority.
-- **Credentials never touch disk.** In-memory from aws-vault, passed per-subprocess via dax.
+- **Sandboxed by default.** Deno permissions: run, env, read, write. No network,
+  no FFI, no ambient authority.
+- **Credentials never touch disk.** In-memory from aws-vault, passed
+  per-subprocess via dax.
 - **Secrets redacted** in all output.
-- **Ctrl+C actually works.** Graceful shutdown, helm release torn down, no orphaned pods. Second press force-quits. Exit 130.
-- **Async cancellation doesn't leak.** AbortController propagated everywhere. Timers cleaned up. Guards between steps.
-- **Errors tell you what to do.** Every message includes the fix. Config validation reports all problems at once.
-- **Helm collision warnings.** Duplicate keys caught before install. No silent overrides.
-- **Single binary, zero deps.** 
+- **Ctrl+C actually works.** Graceful shutdown, helm release torn down, no
+  orphaned pods. Second press force-quits. Exit 130.
+- **Async cancellation doesn't leak.** AbortController propagated everywhere.
+  Timers cleaned up. Guards between steps.
+- **Errors tell you what to do.** Every message includes the fix. Config
+  validation reports all problems at once.
+- **Helm collision warnings.** Duplicate keys caught before install. No silent
+  overrides.
+- **Single binary, zero deps.**
 
 ## Prerequisites
 

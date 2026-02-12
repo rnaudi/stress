@@ -1,18 +1,29 @@
 # Comment taxonomy
 
-Great comments are documentation. Every public item should carry a doc comment (`/** */` TSDoc) so typedoc, IDE hovers, and generated docs surface the same guidance reviewers rely on. Inline `//` belongs to private helpers or single statements that truly need annotation.
+Great comments are documentation. Every public item should carry a doc comment
+(`/** */` TSDoc) so typedoc, IDE hovers, and generated docs surface the same
+guidance reviewers rely on. Inline `//` belongs to private helpers or single
+statements that truly need annotation.
 
 ## Structuring doc comments
 
-The taxonomy categories below (Function, Design, Why, Teacher, Checklist, etc.) describe the **purpose** of a comment, not labels to insert into the text. Do not use Markdown headings like `# Design` or `# Why` inside doc comments. Write flowing prose instead -- a concise summary followed by rationale, constraints, or examples as needed.
+The taxonomy categories below (Function, Design, Why, Teacher, Checklist, etc.)
+describe the **purpose** of a comment, not labels to insert into the text. Do
+not use Markdown headings like `# Design` or `# Why` inside doc comments. Write
+flowing prose instead -- a concise summary followed by rationale, constraints,
+or examples as needed.
 
-For functions, classes, interfaces, and types, lead with a concise summary and keep any rationale in plain prose. Use `@example` for runnable snippets because typedoc groups them automatically.
+For functions, classes, interfaces, and types, lead with a concise summary and
+keep any rationale in plain prose. Use `@example` for runnable snippets because
+typedoc groups them automatically.
 
-Module or entry-point files should start with a file-level `/** @module */` comment that covers intent, scope, design trade-offs, and non-obvious constraints in flowing prose so readers can orient themselves quickly.
+Module or entry-point files should start with a file-level `/** @module */`
+comment that covers intent, scope, design trade-offs, and non-obvious
+constraints in flowing prose so readers can orient themselves quickly.
 
 Example:
 
-```ts
+````ts
 // view/renderer.ts
 
 /**
@@ -37,19 +48,24 @@ Example:
  * await runUI(terminal, monthData);
  * ```
  */
-```
+````
 
 ## Function comments
 
-- Explain what the function promises and when to call it so readers can skip the body.
-- Keep the note beside the signature; the code and comment should travel together.
-- Surface rationale in plain prose near the summary so the documentation reads naturally.
-- Add an `@example` section when a snippet clarifies usage; typedoc will render it in the standard Examples tab.
-- Use `/** */`; for private helpers, fall back to `//` only if the guidance is truly local.
+- Explain what the function promises and when to call it so readers can skip the
+  body.
+- Keep the note beside the signature; the code and comment should travel
+  together.
+- Surface rationale in plain prose near the summary so the documentation reads
+  naturally.
+- Add an `@example` section when a snippet clarifies usage; typedoc will render
+  it in the standard Examples tab.
+- Use `/** */`; for private helpers, fall back to `//` only if the guidance is
+  truly local.
 
 Example:
 
-```ts
+````ts
 // github.ts
 
 /**
@@ -68,13 +84,16 @@ Example:
 export async function fetchPRs(month: string): Promise<PullRequest[]> {
   // ...
 }
-```
+````
 
 ## Design comments
 
-- Describe the big idea for the file, module, or subsystem and the trade-offs you accepted.
-- Keep the rationale in clear sentences on public items so it lands in generated docs.
-- Focus on invariants ("single writer, many readers"), concurrency or memory strategies, and what would break if the design changed.
+- Describe the big idea for the file, module, or subsystem and the trade-offs
+  you accepted.
+- Keep the rationale in clear sentences on public items so it lands in generated
+  docs.
+- Focus on invariants ("single writer, many readers"), concurrency or memory
+  strategies, and what would break if the design changed.
 
 Example:
 
@@ -94,8 +113,10 @@ Example:
 ## Why comments
 
 - Spell out the hidden reason for an ordering, threshold, or guard clause.
-- Work the reasoning directly into the doc comment; rely on inline `//` for a single statement that needs context.
-- Highlight constraints (API quirks, time zones, data contracts) that aren't obvious from the signature.
+- Work the reasoning directly into the doc comment; rely on inline `//` for a
+  single statement that needs context.
+- Highlight constraints (API quirks, time zones, data contracts) that aren't
+  obvious from the signature.
 
 Example:
 
@@ -106,7 +127,10 @@ Example:
  * Remove the stale cache file first so schema migrations never mix old and new
  * formats in a single document.
  */
-export async function rewriteCache(cachePath: string, data: CachedData): Promise<void> {
+export async function rewriteCache(
+  cachePath: string,
+  data: CachedData,
+): Promise<void> {
   await fs.rm(cachePath);
   await writeCache(cachePath, data);
 }
@@ -116,7 +140,8 @@ export async function rewriteCache(cachePath: string, data: CachedData): Promise
 
 - Teach the background math, protocol, or data structure.
 - Put the lesson immediately before the lines that rely on it.
-- For reusable helpers, encode the explanation as a doc comment and include formulas or tables when they clarify behavior.
+- For reusable helpers, encode the explanation as a doc comment and include
+  formulas or tables when they clarify behavior.
 
 Example:
 
@@ -133,8 +158,10 @@ export function leadTime(updatedAt: Date, createdAt: Date): number {
 
 ## Checklist comments
 
-- Remind maintainers about other spots to touch or the order to follow when tooling cannot enforce it.
-- Keep reminders short and actionable; delete them once tests or automation cover the rule.
+- Remind maintainers about other spots to touch or the order to follow when
+  tooling cannot enforce it.
+- Keep reminders short and actionable; delete them once tests or automation
+  cover the rule.
 - Link to follow-up issues when the checklist implies ongoing work.
 
 Example:
@@ -155,7 +182,8 @@ export interface FilterConfig {
 
 - Break long functions into sections with light headings (Step 1/2/3).
 - Use sparingly; if many steps are needed, consider extracting helpers.
-- Inline `//` or block comments are acceptable here because the guidance is local to the routine.
+- Inline `//` or block comments are acceptable here because the guidance is
+  local to the routine.
 
 Example:
 
@@ -175,12 +203,14 @@ renderSummary(frame, chunks[0], month);
 ## Trivial comments
 
 - Delete comments that merely restate the code.
-- Replace them with Function, Why, or Teacher guidance if deeper context is needed.
+- Replace them with Function, Why, or Teacher guidance if deeper context is
+  needed.
 
 ## Debt comments
 
 - Mark shortcuts with clear exit criteria and a review date.
-- Prefer `TODO(issue#)` or `FIXME` with a link; escalate long-lived notes into the issue tracker.
+- Prefer `TODO(issue#)` or `FIXME` with a link; escalate long-lived notes into
+  the issue tracker.
 - Revisit debt comments during each release cut.
 
 Example:
@@ -196,14 +226,17 @@ if (cacheSize > MAX_CACHE_BYTES) {
 
 ## Backup comments
 
-- Never check in old code blocks commented out. Version control already stores history.
+- Never check in old code blocks commented out. Version control already stores
+  history.
 - Delete temporary fallbacks once the new behavior ships.
 
 ## Review checklist
 
-- [ ] Doc comments start with a concise summary; rationale follows in flowing prose.
+- [ ] Doc comments start with a concise summary; rationale follows in flowing
+      prose.
 - [ ] Public APIs include `@example` when usage benefits from a snippet.
-- [ ] Design and Why rationales appear where the next maintainer will look first.
+- [ ] Design and Why rationales appear where the next maintainer will look
+      first.
 - [ ] Checklist and Debt notes point to enforceable steps or tracked issues.
 - [ ] Trivial or stale comments were culled during the change.
 
